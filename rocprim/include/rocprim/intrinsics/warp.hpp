@@ -58,8 +58,8 @@ unsigned int masked_bit_count(unsigned long long x, unsigned int add = 0)
     #else // HIP
         // TODO: Use HIP function(s)
         int c;
-        c = hc::__amdgcn_mbcnt_lo(static_cast<int>(x), add);
-        c = hc::__amdgcn_mbcnt_hi(static_cast<int>(x >> 32), c);
+        c = __mbcnt_lo(static_cast<int>(x), add);
+        c = __mbcnt_hi(static_cast<int>(x >> 32), c);
         return c;
     #endif
 }

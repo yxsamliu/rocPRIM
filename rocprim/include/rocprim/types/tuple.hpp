@@ -181,7 +181,7 @@ namespace detail
 #ifdef __cpp_lib_is_final
     template<class T>
     using is_final = std::is_final<T>;
-#elif defined(__HCC__) // use clang extention
+#elif defined(__HIPCC__) // use clang extention
     template<class T>
     using is_final = std::integral_constant<bool, __is_final(T)>;
 #else

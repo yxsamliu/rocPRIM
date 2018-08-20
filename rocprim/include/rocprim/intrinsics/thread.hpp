@@ -76,7 +76,7 @@ unsigned int lane_id()
         return hc::__lane_id();
     #else // HIP
         // TODO: Find HIP function for that
-        return hc::__lane_id();
+        return __lane_id();
     #endif
 }
 
