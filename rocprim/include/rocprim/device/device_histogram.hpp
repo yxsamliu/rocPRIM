@@ -53,6 +53,29 @@ ROCPRIM_KERNEL __launch_bounds__(
     init_histogram<params.histogram_config.block_size, ActiveChannels>(histogram, bins);
 }
 
+template<class T, unsigned int Size>
+struct fixed_array2
+{
+    T values[Size];
+    //fixed_array2() = default;
+    ROCPRIM_HOST_DEVICE fixed_array2(const T values[Size])
+    {
+        for(unsigned int i = 0; i < Size; i++)
+        {
+            this->values[i] = values[i];
+        }
+    }
+    ROCPRIM_HOST_DEVICE T& operator[](unsigned int index)
+    {
+        return values[index];
+    }
+
+    ROCPRIM_HOST_DEVICE const T& operator[](unsigned int index) const
+    {
+        return values[index];
+    }
+};
+
 template<class Config,
          unsigned int Channels,
          unsigned int ActiveChannels,
@@ -67,12 +90,16 @@ ROCPRIM_KERNEL __launch_bounds__(
                                                   unsigned int   rows,
                                                   unsigned int   row_stride,
                                                   unsigned int   rows_per_block,
-                                                  unsigned int   shared_histograms,
-                                                  fixed_array<Counter*, ActiveChannels> histogram,
+                                                  unsigned int   shared_histograms
+                                                  ,
+                                                  fixed_array<Counter*, ActiveChannels> histogram
+                                                  ,
                                                   fixed_array<SampleToBinOp, ActiveChannels>
                                                       sample_to_bin_op,
-                                                  fixed_array<unsigned int, ActiveChannels> bins)
+                                                  fixed_array<unsigned int, ActiveChannels> bins
+                                                  )
 {
+    #if 0
     static constexpr histogram_config_params params = device_params<Config>();
 
     HIP_DYNAMIC_SHARED(unsigned int, block_histogram);
@@ -90,6 +117,13 @@ ROCPRIM_KERNEL __launch_bounds__(
                                      sample_to_bin_op,
                                      bins,
                                      block_histogram);
+    #else
+    const unsigned int flat_id    = ::rocprim::detail::block_thread_id<0>();
+    if(flat_id < 5)
+    {
+        histogram[0][flat_id] = shared_histograms;
+    }
+    #endif
 }
 
 template<class Config,
@@ -256,25 +290,52 @@ inline hipError_t histogram_impl(void*          temporary_storage,
         // for the case of samples concentrated in one bin
         // Limit the number of shared histograms if occupancy drops due to high dynamic shared
         // memory usage
+
+        // Determine if we should print debug information based on environment variable DBG_HIST
+        const char* dbg_hist_env = std::getenv("DBG_HIST");
+        bool dbg_hist = (dbg_hist_env != nullptr && std::strlen(dbg_hist_env) > 0);
+
         unsigned int chosen_shared_histograms = 0;
         int          max_blocks_per_mp        = 0;
+
+        if(dbg_hist)
+        {
+            std::cout << "Starting calculation of chosen_shared_histograms:\n";
+            std::cout << "params.shared_impl_histograms = " << params.shared_impl_histograms << "\n";
+            std::cout << "block_histogram_bytes = " << block_histogram_bytes << "\n";
+        }
+
         for(unsigned int n = params.shared_impl_histograms; n >= 1; n--)
         {
             int        blocks_per_mp;
-            hipError_t error
-                = hipOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_mp,
-                                                               kernel,
-                                                               block_size,
-                                                               n * block_histogram_bytes);
+            hipError_t error = hipOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_mp,
+                                                                            kernel,
+                                                                            block_size,
+                                                                            n * block_histogram_bytes);
             if(error != hipSuccess)
             {
                 return error;
             }
+
+            if(dbg_hist)
+            {
+                std::cout << "Testing " << n << " shared_histograms per block:\n";
+                std::cout << "  block_size: " << block_size << "\n";
+                std::cout << "  Required shared memory: " << n * block_histogram_bytes << " bytes\n";
+                std::cout << "  Active blocks per MP:   " << blocks_per_mp << "\n";
+            }
+
             if(blocks_per_mp > max_blocks_per_mp)
             {
                 chosen_shared_histograms = n;
                 max_blocks_per_mp        = blocks_per_mp;
             }
+        }
+
+        if(dbg_hist)
+        {
+            std::cout << "Final chosen_shared_histograms = " << chosen_shared_histograms << "\n";
+            std::cout << "Max active blocks per MP = " << max_blocks_per_mp << "\n";
         }
 
         // Choose minimum grid size needed to achieve the best occupancy
@@ -296,6 +357,7 @@ inline hipError_t histogram_impl(void*          temporary_storage,
         grid_size.x = std::min(chosen_grid_size, blocks_x);
         grid_size.y = std::min(rows, ::rocprim::detail::ceiling_div(chosen_grid_size, grid_size.x));
         const unsigned int rows_per_block = ::rocprim::detail::ceiling_div(rows, grid_size.y);
+#if 0
         hipLaunchKernelGGL(kernel,
                            grid_size,
                            dim3(block_size, 1),
@@ -306,10 +368,36 @@ inline hipError_t histogram_impl(void*          temporary_storage,
                            rows,
                            row_stride,
                            rows_per_block,
-                           chosen_shared_histograms,
-                           fixed_array<Counter*, ActiveChannels>(histogram),
+                           chosen_shared_histograms
+                           ,
+                           fixed_array<Counter*, ActiveChannels>(histogram)
+                           ,
                            fixed_array<SampleToBinOp, ActiveChannels>(sample_to_bin_op),
-                           fixed_array<unsigned int, ActiveChannels>(bins));
+                           fixed_array<unsigned int, ActiveChannels>(bins)
+                           );
+#else
+        //chosen_shared_histograms = 5;
+        //hipDeviceSynchronize();
+        printf("chosen_shared_histograms=%d\n", chosen_shared_histograms);
+        hipLaunchKernelGGL(kernel,
+                           1,
+                           5,
+                           0,
+                           0,
+                           samples,
+                           0,
+                           0,
+                           0,
+                           0,
+                           chosen_shared_histograms
+                           ,
+                           fixed_array<Counter*, ActiveChannels>(histogram)
+                           ,
+                           fixed_array<SampleToBinOp, ActiveChannels>(sample_to_bin_op),
+                           fixed_array<unsigned int, ActiveChannels>(bins)
+                           );
+
+#endif
         ROCPRIM_DETAIL_HIP_SYNC_AND_RETURN_ON_ERROR("histogram_shared",
                                                     grid_size.x * grid_size.y * block_size,
                                                     start);
